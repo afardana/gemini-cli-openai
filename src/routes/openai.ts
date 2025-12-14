@@ -30,7 +30,6 @@ OpenAIRoute.get("/models", async (c) => {
 // Chat completions endpoint
 OpenAIRoute.post("/chat/completions", async (c) => {
 	try {
-		console.log("Chat completions request received");
 		const body = await c.req.json<ChatCompletionRequest>();
 		const model = body.model || DEFAULT_MODEL;
 		const messages = body.messages || [];
@@ -79,16 +78,6 @@ OpenAIRoute.post("/chat/completions", async (c) => {
 
 		const tools = body.tools;
 		const tool_choice = body.tool_choice;
-
-		console.log("Request body parsed:", {
-			model,
-			messageCount: messages.length,
-			stream,
-			includeReasoning,
-			thinkingBudget,
-			tools,
-			tool_choice
-		});
 
 		if (!messages.length) {
 			return c.json({ error: "messages is a required field" }, 400);
@@ -166,12 +155,22 @@ OpenAIRoute.post("/chat/completions", async (c) => {
 			(async () => {
 				try {
 					console.log("Starting stream generation");
+					const passthroughNativeToolControls = {
+						extra_body: body.extra_body,
+						model_params: body.model_params,
+						// Also forward any top-level native tool control keys if a client sends them there.
+						enable_search: (body as unknown as Record<string, unknown>).enable_search,
+						enable_url_context: (body as unknown as Record<string, unknown>).enable_url_context,
+						enable_native_tools: (body as unknown as Record<string, unknown>).enable_native_tools,
+						native_tools_priority: (body as unknown as Record<string, unknown>).native_tools_priority
+					};
 					const geminiStream = geminiClient.streamContent(model, systemPrompt, otherMessages, {
 						includeReasoning,
 						thinkingBudget,
 						tools,
 						tool_choice,
-						...generationOptions
+						...generationOptions,
+						...passthroughNativeToolControls
 					});
 
 					for await (const chunk of geminiStream) {
@@ -207,12 +206,22 @@ OpenAIRoute.post("/chat/completions", async (c) => {
 			// Non-streaming response
 			try {
 				console.log("Starting non-streaming completion");
+				const passthroughNativeToolControls = {
+					extra_body: body.extra_body,
+					model_params: body.model_params,
+					// Also forward any top-level native tool control keys if a client sends them there.
+					enable_search: (body as unknown as Record<string, unknown>).enable_search,
+					enable_url_context: (body as unknown as Record<string, unknown>).enable_url_context,
+					enable_native_tools: (body as unknown as Record<string, unknown>).enable_native_tools,
+					native_tools_priority: (body as unknown as Record<string, unknown>).native_tools_priority
+				};
 				const completion = await geminiClient.getCompletion(model, systemPrompt, otherMessages, {
 					includeReasoning,
 					thinkingBudget,
 					tools,
 					tool_choice,
-					...generationOptions
+					...generationOptions,
+					...passthroughNativeToolControls
 				});
 
 				const response: ChatCompletionResponse = {

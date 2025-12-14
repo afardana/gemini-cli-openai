@@ -32,16 +32,30 @@ export class NativeToolsManager {
 		requestParams: NativeToolsRequestParams,
 		modelId: string
 	): NativeToolsConfiguration {
+		const hasCustomTools = customTools.length > 0;
+		const nativeToolsAvailable = this.envSettings.enableGoogleSearch || this.envSettings.enableUrlContext;
+
 		// Handle disabled native tools
 		if (!this.envSettings.enableNativeTools) {
 			return this.createCustomOnlyConfig(customTools);
 		}
 
-		// Handle Google Search + URL Context combination
-		const searchAndUrlRequested =
-			this.shouldEnableGoogleSearch(requestParams) || this.shouldEnableUrlContext(requestParams);
+		// Respect explicit request disabling of native tools (when allowed)
+		if (this.envSettings.allowRequestControl && requestParams.enableNativeTools === false) {
+			return this.createCustomOnlyConfig(customTools);
+		}
 
-		if (searchAndUrlRequested) {
+		// Decide whether native tools are requested.
+		// IMPORTANT: When custom tools are present, we do NOT enable native tools by default,
+		// because the Code Assist endpoint rejects mixing native search tools with function tools.
+		const nativeRequestedExplicitly =
+			this.envSettings.allowRequestControl &&
+			(requestParams.enableNativeTools === true || requestParams.enableSearch === true || requestParams.enableUrlContext === true);
+		const shouldDefaultToNative = this.envSettings.defaultToNativeTools && !hasCustomTools;
+		const shouldConsiderNative = nativeToolsAvailable && (nativeRequestedExplicitly || shouldDefaultToNative);
+
+		// Handle Google Search + URL Context combination
+		if (shouldConsiderNative) {
 			return this.createSearchAndUrlConfig(requestParams, customTools, modelId);
 		}
 
@@ -83,22 +97,32 @@ export class NativeToolsManager {
 	): NativeToolsConfiguration {
 		const nativeTools = this.createNativeToolsArray(requestParams, modelId);
 
+		// NOTE: The Code Assist endpoint rejects requests that mix native search tools
+		// (google_search/url_context) with custom function tools in the same request:
+		// "Multiple tools are supported only when they are all search tools."
+		// Therefore, we must choose either native OR custom tools based on priority.
+
 		if (this.envSettings.priority === "native_first" || requestParams.nativeToolsPriority === "native") {
 			return {
 				useNativeTools: true,
 				useCustomTools: false,
 				nativeTools,
+				customTools: undefined,
 				priority: "native",
 				toolType: "search_and_url"
 			};
-		} else if (this.envSettings.priority === "custom_first" && customTools.length > 0) {
+		} else if (
+			(this.envSettings.priority === "custom_first" || requestParams.nativeToolsPriority === "custom") &&
+			customTools.length > 0
+		) {
 			return this.createCustomOnlyConfig(customTools);
 		} else {
-			// Default to native tools
+			// Default to native tools (do not mix with custom tools)
 			return {
 				useNativeTools: true,
 				useCustomTools: false,
 				nativeTools,
+				customTools: undefined,
 				priority: "native",
 				toolType: "search_and_url"
 			};

@@ -112,10 +112,12 @@ export class GeminiApiClient {
 		}
 
 		try {
-			const initialProjectId = "default-project";
 			const loadResponse = (await this.authManager.callEndpoint("loadCodeAssist", {
-				cloudaicompanionProject: initialProjectId,
-				metadata: { duetProject: initialProjectId }
+				"metadata": {
+					"ideType": "IDE_UNSPECIFIED",
+					"platform": "PLATFORM_UNSPECIFIED",
+					"pluginType": "GEMINI"
+				}
 			})) as ProjectDiscoveryResponse;
 
 			if (loadResponse.cloudaicompanionProject) {
@@ -518,6 +520,7 @@ export class GeminiApiClient {
 		nativeToolsManager?: NativeToolsManager
 	): AsyncGenerator<StreamChunk> {
 		const citationsProcessor = new CitationsProcessor(this.env);
+		
 		const response = await fetch(`${CODE_ASSIST_ENDPOINT}/${CODE_ASSIST_API_VERSION}:streamGenerateContent?alt=sse`, {
 			method: "POST",
 			headers: {

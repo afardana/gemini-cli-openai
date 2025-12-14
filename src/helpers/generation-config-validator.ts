@@ -187,6 +187,37 @@ export class GenerationConfigValidator {
 		return generationConfig;
 	}
 
+	/**
+	 * Recursively removes OpenAI-specific fields from JSON schema objects.
+	 * This includes fields like 'strict' that Gemini API doesn't support.
+	 * @param obj - The object to clean
+	 * @returns A new object with OpenAI-specific fields removed
+	 */
+	private static cleanOpenAISchemaFields(obj: unknown): unknown {
+		if (obj === null || obj === undefined) {
+			return obj;
+		}
+
+		if (typeof obj !== "object") {
+			return obj;
+		}
+
+		if (Array.isArray(obj)) {
+			return obj.map((item) => this.cleanOpenAISchemaFields(item));
+		}
+
+		const cleaned: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+			// Skip OpenAI-specific fields
+			if (key === "strict") {
+				continue;
+			}
+			// Recursively clean nested objects
+			cleaned[key] = this.cleanOpenAISchemaFields(value);
+		}
+		return cleaned;
+	}
+
 	static createValidateTools(options: Partial<ChatCompletionRequest> = {}) {
 		const tools = [];
 		let toolConfig = {};
@@ -194,10 +225,12 @@ export class GenerationConfigValidator {
 		if (Array.isArray(options.tools) && options.tools.length > 0) {
 			const functionDeclarations = options.tools.map((tool) => {
 				let parameters = tool.function.parameters;
+				
 				// Filter parameters for Claude-style compatibility by removing keys starting with '$'
+				// and remove OpenAI-specific fields like 'strict'
 				if (parameters) {
 					const before = parameters;
-					parameters = Object.keys(parameters)
+					parameters = Object.keys(before)
 						.filter((key) => !key.startsWith("$"))
 						.reduce(
 							(after, key) => {
@@ -206,12 +239,21 @@ export class GenerationConfigValidator {
 							},
 							{} as Record<string, unknown>
 						);
+					// Recursively clean OpenAI-specific fields from the entire parameter schema
+					parameters = this.cleanOpenAISchemaFields(parameters) as Record<string, unknown>;
 				}
-				return {
+				
+				// Create function declaration without OpenAI-specific fields like 'strict'
+				const functionDeclaration: Record<string, unknown> = {
 					name: tool.function.name,
 					description: tool.function.description,
 					parameters
 				};
+				
+				// Remove any strict field if it exists at the function level
+				delete (functionDeclaration as Record<string, unknown>).strict;
+				
+				return functionDeclaration;
 			});
 
 			tools.push({ functionDeclarations });
@@ -241,21 +283,29 @@ export class GenerationConfigValidator {
 		tools: unknown[] | undefined;
 		toolConfig: unknown | undefined;
 	} {
-		if (config.useCustomTools && config.customTools && config.customTools.length > 0) {
-			const { toolConfig } = this.createValidateTools(options);
-			return {
-				tools: [
-					{
-						functionDeclarations: config.customTools.map((t) => t.function)
-					}
-				],
-				toolConfig: toolConfig
-			};
+		const toolsList: unknown[] = [];
+		let toolConfig: unknown = undefined;
+
+		// IMPORTANT: Gemini Code Assist endpoint rejects mixing native search tools
+		// (google_search/url_context) with custom function declarations in the same request:
+		// "Multiple tools are supported only when they are all search tools."
+		// We therefore enforce a strict selection based on config.priority.
+		const nativeTools = config.nativeTools ?? [];
+		const customTools = config.customTools ?? [];
+		const shouldIncludeNativeTools = config.priority !== "custom" && config.useNativeTools && nativeTools.length > 0;
+		const shouldIncludeCustomTools = config.priority !== "native" && config.useCustomTools && customTools.length > 0;
+
+		if (shouldIncludeNativeTools && shouldIncludeCustomTools) {
+			console.warn(
+				"[Tools] Both native and custom tools were requested, but mixed tools are not supported by this endpoint. " +
+					`Enforcing priority: ${config.priority}.`
+			);
 		}
 
-		if (config.useNativeTools && config.nativeTools && config.nativeTools.length > 0) {
-			return {
-				tools: config.nativeTools.map((tool) => {
+		// Add native tools first if enabled
+		if (shouldIncludeNativeTools) {
+			toolsList.push(
+				...nativeTools.map((tool) => {
 					if (tool.google_search) {
 						return { google_search: tool.google_search };
 					}
@@ -263,12 +313,41 @@ export class GenerationConfigValidator {
 						return { url_context: tool.url_context };
 					}
 					return tool;
-				}),
-				toolConfig: undefined // Native tools don't use toolConfig in the same way
+				})
+			);
+		}
+
+		// Add custom tools if enabled
+		if (shouldIncludeCustomTools) {
+			const { toolConfig: customToolConfig } = this.createValidateTools(options);
+			toolsList.push({
+				functionDeclarations: customTools.map((t) => {
+					// Create a clean function declaration without strict field
+					const cleanedFunction: Record<string, unknown> = {
+						name: t.function.name,
+						description: t.function.description,
+						parameters: t.function.parameters
+					};
+					// Recursively clean OpenAI-specific fields
+					if (cleanedFunction.parameters) {
+						cleanedFunction.parameters = this.cleanOpenAISchemaFields(cleanedFunction.parameters);
+					}
+					return cleanedFunction;
+				})
+			});
+			toolConfig = customToolConfig; // Use custom tool config if custom tools are present
+		}
+
+		// Return tools if any are configured
+		if (toolsList.length > 0) {
+			return {
+				tools: toolsList,
+				toolConfig: toolConfig
 			};
 		}
 
 		// If no tools are enabled or the tool lists are empty, return undefined
+
 		return { tools: undefined, toolConfig: undefined };
 	}
 }
